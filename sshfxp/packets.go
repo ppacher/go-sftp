@@ -3,7 +3,9 @@ package sshfxp
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
+	"reflect"
 )
 
 const (
@@ -43,20 +45,78 @@ type Packet struct {
 }
 
 func (p *Packet) Read(r io.Reader) error {
-	if err := binary.Read(r, binary.LittleEndian, &p.Length); err != nil {
+	read := func(x interface{}) error {
+		return binary.Read(r, binary.LittleEndian, x)
+	}
+
+	if err := read(&p.Length); err != nil {
 		return err
 	}
 
-	if err := binary.Read(r, binary.LittleEndian, &p.Type); err != nil {
+	if err := read(&p.Type); err != nil {
 		return err
 	}
 
 	p.Payload = make([]byte, p.Length-1)
-	if err := binary.Read(r, binary.LittleEndian, &p.Payload); err != nil {
+	if err := read(&p.Payload); err != nil {
 		return err
 	}
 
 	return nil
+}
+
+func (p *Packet) Bytes() ([]byte, error) {
+	buf := new(bytes.Buffer)
+
+	buf.Grow(int(p.Length) + 4)
+
+	write := func(x interface{}) error {
+		return binary.Write(buf, binary.LittleEndian, x)
+	}
+
+	if err := write(p.Length); err != nil {
+		return nil, err
+	}
+
+	if err := write(p.Type); err != nil {
+		return nil, err
+	}
+
+	if err := write(p.Payload); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+func (p *Packet) Encode(x interface{}) error {
+	buf := new(bytes.Buffer)
+
+	if meta, ok := x.(GetMeta); !ok {
+		return fmt.Errorf("invalid parameter")
+	} else {
+		if err := meta.Meta().WriteMeta(buf); err != nil {
+			return err
+		}
+	}
+
+	if writer, ok := x.(Writer); !ok {
+		return fmt.Errorf("invalid parameter")
+	} else {
+		if err := writer.Write(buf); err != nil {
+			return err
+		}
+	}
+
+	data := buf.Bytes()
+	p.Length = uint32(len(data) + 1)
+	p.Payload = data
+
+	return nil
+}
+
+type Writer interface {
+	Write(io.Writer) error
 }
 
 type Reader interface {
@@ -118,7 +178,13 @@ func (p *Packet) Decode() (interface{}, error) {
 	case TypeAttr:
 		o = &Attrs{}
 	case TypeExtended:
+		// TODO
+		return nil, fmt.Errorf("not yet implemented")
 	case TypeExtendedReply:
+		// TODO
+		return nil, fmt.Errorf("not yet implemented")
+	default:
+		return nil, fmt.Errorf("not yet implemented")
 	}
 
 	buf := bytes.NewBuffer(p.Payload)
@@ -216,11 +282,11 @@ func (a Attr) Write(w io.Writer) error {
 		return err
 	}
 
+	// TODO: Extended is currently not supported
+	a.ExtendedCount = 0
 	if err := write(a.ExtendedCount); err != nil {
 		return err
 	}
-
-	// TODO: write extened
 	return nil
 }
 
@@ -260,7 +326,6 @@ func (a *Attr) Read(r io.Reader) error {
 	if err := read(&a.ExtendedCount); err != nil {
 		return err
 	}
-
 	// TODO read extened
 	return nil
 }
@@ -749,17 +814,82 @@ type Name struct {
 	Meta
 
 	Count uint32
-	Names struct {
+	Names []struct {
 		Filename string
 		Longname string
 		Attr     Attr
 	}
 }
 
+func (n Name) Write(w io.Writer) error {
+	n.Count = uint32(len(n.Names))
+
+	if err := binary.Write(w, binary.LittleEndian, n.Count); err != nil {
+		return err
+	}
+
+	for _, name := range n.Names {
+		if err := writeString(w, name.Filename); err != nil {
+			return err
+		}
+
+		if err := writeString(w, name.Longname); err != nil {
+			return err
+		}
+
+		if err := name.Attr.Write(w); err != nil {
+			return err
+		}
+	}
+
+	return fmt.Errorf("Not yet implemented")
+}
+
+func (n Name) Read(r io.Reader) error {
+	if err := binary.Read(r, binary.LittleEndian, &n.Count); err != nil {
+		return err
+	}
+
+	for i := 0; i < int(n.Count); i++ {
+		var filename string
+		var longname string
+		var attr Attr
+
+		if err := readString(r, &filename); err != nil {
+			return err
+		}
+
+		if err := readString(r, &longname); err != nil {
+			return err
+		}
+
+		if err := attr.Read(r); err != nil {
+			return err
+		}
+
+		n.Names = append(n.Names, struct {
+			Filename string
+			Longname string
+			Attr     Attr
+		}{filename, longname, attr})
+
+	}
+
+	return fmt.Errorf("Not yet implemented")
+}
+
 type Attrs struct {
 	Meta
 
 	Attr Attr
+}
+
+func (a Attrs) Write(w io.Writer) error {
+	return a.Attr.Write(w)
+}
+
+func (a *Attrs) Read(r io.Reader) error {
+	return a.Attr.Read(r)
 }
 
 type Version struct {
