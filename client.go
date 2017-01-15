@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sync"
 
 	"github.com/Sirupsen/logrus"
@@ -105,23 +106,32 @@ func (cli *Client) Wait() {
 	cli.wg.Wait()
 }
 
-func (cli *Client) send(x interface{}) error {
+func (cli *Client) send(x sshfxp.Message) (<-chan sshfxp.Message, error) {
 	var pkt sshfxp.Packet
+	var res <-chan sshfxp.Message
+
+	if header, ok := (interface{}(x)).(sshfxp.Header); ok {
+		id, ch := cli.router.Get()
+
+		header.SetID(id)
+
+		res = ch
+	}
 
 	if err := pkt.Encode(x); err != nil {
-		return err
+		return nil, err
 	}
 
 	cli.outgoing <- pkt
 
-	return nil
+	return res, nil
 }
 
 func (cli *Client) handleMessage(msg sshfxp.Packet) error {
-	logrus.Infof("Got message: Len=%d Type=%d", msg.Length, msg.Type)
+	logrus.Infof("Got message: Len=%d Type=%d: %#v", msg.Length, msg.Type, msg)
 	payload, err := msg.Decode()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to decode message: %s", err)
 	}
 
 	if err := cli.router.Resolve(payload); err != nil {
@@ -132,11 +142,11 @@ func (cli *Client) handleMessage(msg sshfxp.Packet) error {
 }
 
 func (cli *Client) DoHandshake() error {
-	init := sshfxp.Init{
+	init := &sshfxp.Init{
 		Version: 3,
 	}
 
-	if err := cli.send(init); err != nil {
+	if _, err := cli.send(init); err != nil {
 		return err
 	}
 
@@ -147,7 +157,7 @@ func (cli *Client) DoHandshake() error {
 		return err
 	}
 
-	if version, ok := msg.(sshfxp.Version); !ok {
+	if version, ok := msg.(*sshfxp.Version); !ok {
 		return errors.New("unexpected message received")
 	} else {
 		if version.Version != init.Version {
@@ -165,28 +175,42 @@ func (cli *Client) Version() uint32 {
 }
 
 func (cli *Client) OpenDir(path string) (string, error) {
-	id, ch := cli.router.Get()
-
-	open := sshfxp.OpenDir{
-		Meta: sshfxp.Meta{
-			ID: id,
-		},
+	open := &sshfxp.OpenDir{
 		Path: path,
 	}
 
-	if err := cli.send(open); err != nil {
+	var err error
+	var res_chan <-chan sshfxp.Message
+
+	if res_chan, err = cli.send(open); err != nil {
 		return "", err
 	}
 
 	// wait for result
-	var res interface{} = <-ch
+	var res interface{} = <-res_chan
 
 	switch msg := res.(type) {
-	case sshfxp.Handle:
+	case *sshfxp.Handle:
 		return msg.Handle, nil
-	case sshfxp.Status:
+	case *sshfxp.Status:
 		return "", fmt.Errorf("%d - %s", msg.Error, msg.Message)
 	}
 
-	return "", fmt.Errorf("unexpected response: %v", res)
+	return "", fmt.Errorf("unexpected response: %#v", res)
+}
+
+func (cli *Client) ReadDir(handle string) ([]*os.FileInfo, error) {
+	read := &sshfxp.ReadDir{
+		Handle: handle,
+	}
+
+	resCh, err := cli.send(read)
+	if err != nil {
+		return nil, err
+	}
+
+	res := <-resCh
+
+	logrus.Infof("Got: %#v", res)
+	return nil, nil
 }

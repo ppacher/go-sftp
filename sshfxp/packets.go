@@ -5,7 +5,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"reflect"
+
+	"github.com/Sirupsen/logrus"
 )
 
 const (
@@ -40,53 +41,53 @@ const (
 
 func TypeID(x interface{}) byte {
 	switch x.(type) {
-	case Init:
+	case *Init:
 		return TypeInit
-	case Version:
+	case *Version:
 		return TypeVersion
-	case Open:
+	case *Open:
 		return TypeOpen
-	case Close:
+	case *Close:
 		return TypeClose
-	case Read:
+	case *Read:
 		return TypeRead
-	case Write:
+	case *Write:
 		return TypeWrite
-	case LStat:
+	case *LStat:
 		return TypeLStat
-	case FStat:
+	case *FStat:
 		return TypeFStat
-	case SetStat:
+	case *SetStat:
 		return TypeSetStat
-	case FSetStat:
+	case *FSetStat:
 		return TypeFSetStat
-	case OpenDir:
+	case *OpenDir:
 		return TypeOpenDir
-	case ReadDir:
+	case *ReadDir:
 		return TypeReadDir
-	case Remove:
+	case *Remove:
 		return TypeRemove
-	case MkDir:
+	case *MkDir:
 		return TypeMkDir
-	case RmDir:
+	case *RmDir:
 		return TypeRmDir
-	case RealPath:
+	case *RealPath:
 		return TypeRealPath
-	case Stat:
+	case *Stat:
 		return TypeStat
-	case Rename:
+	case *Rename:
 		return TypeRename
-	case ReadLink:
+	case *ReadLink:
 		return TypeReadlink
-	case Symlink:
+	case *Symlink:
 		return TypeSymlink
-	case Status:
+	case *Status:
 		return TypeStatus
-	case Handle:
+	case *Handle:
 		return TypeHandle
-	case Data:
+	case *Data:
 		return TypeData
-	case Name:
+	case *Name:
 		return TypeName
 	default:
 		panic(fmt.Sprintf("unknown type: %v", x))
@@ -148,14 +149,14 @@ func (p *Packet) Bytes() ([]byte, error) {
 func (p *Packet) Encode(x interface{}) error {
 	buf := new(bytes.Buffer)
 
-	if meta, ok := x.(Message); ok && meta.GetMeta() != nil {
-		if err := meta.GetMeta().WriteMeta(buf); err != nil {
+	if header, ok := x.(Header); ok {
+		if err := binary.Write(buf, binary.BigEndian, header.GetID()); err != nil {
 			return err
 		}
 	}
 
 	if writer, ok := x.(Writer); !ok {
-		return fmt.Errorf("invalid parameter: %v does not implement sshfxp.Writer", x)
+		return fmt.Errorf("invalid parameter: %#v does not implement sshfxp.Writer", x)
 	} else {
 		if err := writer.Write(buf); err != nil {
 			return err
@@ -179,7 +180,7 @@ type Reader interface {
 }
 
 func (p *Packet) Decode() (Message, error) {
-	var o Reader
+	var o Message
 
 	switch p.Type {
 	case TypeInit:
@@ -242,21 +243,26 @@ func (p *Packet) Decode() (Message, error) {
 		return nil, fmt.Errorf("not yet implemented")
 	}
 
-	buf := bytes.NewBuffer(p.Payload)
+	if int(p.Length) != len(p.Payload)+1 /* byte for type */ {
+		return nil, fmt.Errorf("invalid packet length: expected %d got %d", p.Length, len(p.Payload)+1)
+	}
 
-	if o.(Message).GetMeta() != nil {
-		if err := o.(Message).GetMeta().ReadMeta(buf); err != nil {
-			return nil, err
+	buf := bytes.NewBuffer(p.Payload)
+	if header, ok := o.(Header); ok {
+		var id uint32
+
+		if err := binary.Read(buf, binary.BigEndian, &id); err != nil {
+			return nil, fmt.Errorf("failed to read id: %s", err)
 		}
+
+		header.SetID(id)
 	}
 
 	if err := o.Read(buf); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read body: %s", err)
 	}
 
-	res := reflect.Indirect(reflect.ValueOf(o)).Interface()
-
-	return res.(Message), nil
+	return o, nil
 }
 
 //
@@ -276,11 +282,7 @@ type Init struct {
 	}
 }
 
-func (i Init) GetMeta() *Meta {
-	return nil
-}
-
-func (i Init) Write(w io.Writer) error {
+func (i *Init) Write(w io.Writer) error {
 	return binary.Write(w, binary.BigEndian, i.Version)
 	// TODO: write extensions
 }
@@ -312,7 +314,7 @@ type Attr struct {
 	}
 }
 
-func (a Attr) Write(w io.Writer) error {
+func (a *Attr) Write(w io.Writer) error {
 	write := func(x interface{}) error {
 		return binary.Write(w, binary.BigEndian, x)
 	}
@@ -393,24 +395,15 @@ func (a *Attr) Read(r io.Reader) error {
 	return nil
 }
 
-type Meta struct {
-	ID uint32
-}
-
-func (m Meta) GetMeta() *Meta {
-	return &m
+type Header interface {
+	SetID(uint32)
+	GetID() uint32
 }
 
 type Message interface {
-	GetMeta() *Meta
-}
+	Writer
 
-func (m Meta) WriteMeta(w io.Writer) error {
-	return binary.Write(w, binary.BigEndian, m.ID)
-}
-
-func (m *Meta) ReadMeta(r io.Reader) error {
-	return binary.Read(r, binary.BigEndian, &m.ID)
+	Reader
 }
 
 const (
@@ -440,14 +433,22 @@ const (
 )
 
 type Open struct {
-	Meta
+	ID uint32
 
 	Filename   string
 	PFlags     uint32
 	Attributes Attr
 }
 
-func (o Open) Write(w io.Writer) error {
+func (x *Open) SetID(id uint32) {
+	x.ID = id
+}
+
+func (x *Open) GetID() uint32 {
+	return x.ID
+}
+
+func (o *Open) Write(w io.Writer) error {
 	if err := writeString(w, o.Filename); err != nil {
 		return err
 	}
@@ -472,12 +473,20 @@ func (o *Open) Read(r io.Reader) error {
 }
 
 type Close struct {
-	Meta
+	ID uint32
 
 	Handle string
 }
 
-func (c Close) Write(w io.Writer) error {
+func (x *Close) SetID(id uint32) {
+	x.ID = id
+}
+
+func (x *Close) GetID() uint32 {
+	return x.ID
+}
+
+func (c *Close) Write(w io.Writer) error {
 	return writeString(w, c.Handle)
 }
 
@@ -486,13 +495,21 @@ func (c *Close) Read(r io.Reader) error {
 }
 
 type Read struct {
-	Meta
+	ID     uint32
 	Handle string
 	Offset uint64
 	Length uint32
 }
 
-func (_r Read) Write(w io.Writer) error {
+func (x *Read) SetID(id uint32) {
+	x.ID = id
+}
+
+func (x *Read) GetID() uint32 {
+	return x.ID
+}
+
+func (_r *Read) Write(w io.Writer) error {
 	if err := writeString(w, _r.Handle); err != nil {
 		return err
 	}
@@ -517,7 +534,7 @@ func (_r *Read) Read(r io.Reader) error {
 }
 
 type Write struct {
-	Meta
+	ID uint32
 
 	Handle string
 	Offset uint64
@@ -526,7 +543,15 @@ type Write struct {
 	Data []byte
 }
 
-func (_w Write) Write(w io.Writer) error {
+func (x *Write) SetID(id uint32) {
+	x.ID = id
+}
+
+func (x *Write) GetID() uint32 {
+	return x.ID
+}
+
+func (_w *Write) Write(w io.Writer) error {
 	if err := writeString(w, _w.Handle); err != nil {
 		return err
 	}
@@ -560,12 +585,20 @@ func (_w Write) Read(r io.Reader) error {
 }
 
 type Remove struct {
-	Meta
+	ID uint32
 
 	File string
 }
 
-func (rm Remove) Write(w io.Writer) error {
+func (x *Remove) SetID(id uint32) {
+	x.ID = id
+}
+
+func (x *Remove) GetID() uint32 {
+	return x.ID
+}
+
+func (rm *Remove) Write(w io.Writer) error {
 	return writeString(w, rm.File)
 }
 
@@ -574,13 +607,21 @@ func (rm *Remove) Read(r io.Reader) error {
 }
 
 type Rename struct {
-	Meta
+	ID uint32
 
 	OldPath string
 	NewPath string
 }
 
-func (rn Rename) Write(w io.Writer) error {
+func (x *Rename) SetID(id uint32) {
+	x.ID = id
+}
+
+func (x *Rename) GetID() uint32 {
+	return x.ID
+}
+
+func (rn *Rename) Write(w io.Writer) error {
 	if err := writeString(w, rn.OldPath); err != nil {
 		return err
 	}
@@ -597,13 +638,21 @@ func (rn *Rename) Read(r io.Reader) error {
 }
 
 type MkDir struct {
-	Meta
+	ID uint32
 
 	Path string
 	Attr Attr
 }
 
-func (mk MkDir) Write(w io.Writer) error {
+func (x *MkDir) SetID(id uint32) {
+	x.ID = id
+}
+
+func (x *MkDir) GetID() uint32 {
+	return x.ID
+}
+
+func (mk *MkDir) Write(w io.Writer) error {
 	if err := writeString(w, mk.Path); err != nil {
 		return err
 	}
@@ -620,12 +669,20 @@ func (mk *MkDir) Read(r io.Reader) error {
 }
 
 type RmDir struct {
-	Meta
+	ID uint32
 
 	Path string
 }
 
-func (rm RmDir) Write(w io.Writer) error {
+func (x *RmDir) SetID(id uint32) {
+	x.ID = id
+}
+
+func (x *RmDir) GetID() uint32 {
+	return x.ID
+}
+
+func (rm *RmDir) Write(w io.Writer) error {
 	return writeString(w, rm.Path)
 }
 
@@ -634,12 +691,20 @@ func (rm *RmDir) Read(r io.Reader) error {
 }
 
 type OpenDir struct {
-	Meta
+	ID uint32
 
 	Path string
 }
 
-func (o OpenDir) Write(w io.Writer) error {
+func (x *OpenDir) SetID(id uint32) {
+	x.ID = id
+}
+
+func (x *OpenDir) GetID() uint32 {
+	return x.ID
+}
+
+func (o *OpenDir) Write(w io.Writer) error {
 	return writeString(w, o.Path)
 }
 
@@ -648,12 +713,20 @@ func (o *OpenDir) Read(r io.Reader) error {
 }
 
 type ReadDir struct {
-	Meta
+	ID uint32
 
 	Handle string
 }
 
-func (o ReadDir) Write(w io.Writer) error {
+func (x *ReadDir) SetID(id uint32) {
+	x.ID = id
+}
+
+func (x *ReadDir) GetID() uint32 {
+	return x.ID
+}
+
+func (o *ReadDir) Write(w io.Writer) error {
 	return writeString(w, o.Handle)
 }
 
@@ -662,12 +735,20 @@ func (o *ReadDir) Read(r io.Reader) error {
 }
 
 type Stat struct {
-	Meta
+	ID uint32
 
 	Handle string
 }
 
-func (s Stat) Write(w io.Writer) error {
+func (x *Stat) SetID(id uint32) {
+	x.ID = id
+}
+
+func (x *Stat) GetID() uint32 {
+	return x.ID
+}
+
+func (s *Stat) Write(w io.Writer) error {
 	return writeString(w, s.Handle)
 }
 
@@ -676,12 +757,20 @@ func (s *Stat) Read(r io.Reader) error {
 }
 
 type LStat struct {
-	Meta
+	ID uint32
 
 	Handle string
 }
 
-func (s LStat) Write(w io.Writer) error {
+func (x *LStat) SetID(id uint32) {
+	x.ID = id
+}
+
+func (x *LStat) GetID() uint32 {
+	return x.ID
+}
+
+func (s *LStat) Write(w io.Writer) error {
 	return writeString(w, s.Handle)
 }
 
@@ -690,12 +779,20 @@ func (s *LStat) Read(r io.Reader) error {
 }
 
 type FStat struct {
-	Meta
+	ID uint32
 
 	Handle string
 }
 
-func (s FStat) Write(w io.Writer) error {
+func (x *FStat) SetID(id uint32) {
+	x.ID = id
+}
+
+func (x *FStat) GetID() uint32 {
+	return x.ID
+}
+
+func (s *FStat) Write(w io.Writer) error {
 	return writeString(w, s.Handle)
 }
 
@@ -704,13 +801,21 @@ func (s *FStat) Read(r io.Reader) error {
 }
 
 type SetStat struct {
-	Meta
+	ID uint32
 
 	Path string
 	Attr Attr
 }
 
-func (ss SetStat) Write(w io.Writer) error {
+func (x *SetStat) SetID(id uint32) {
+	x.ID = id
+}
+
+func (x *SetStat) GetID() uint32 {
+	return x.ID
+}
+
+func (ss *SetStat) Write(w io.Writer) error {
 	if err := writeString(w, ss.Path); err != nil {
 		return err
 	}
@@ -727,13 +832,21 @@ func (ss *SetStat) Read(r io.Reader) error {
 }
 
 type FSetStat struct {
-	Meta
+	ID uint32
 
 	Path string
 	Attr Attr
 }
 
-func (ss FSetStat) Write(w io.Writer) error {
+func (x *FSetStat) SetID(id uint32) {
+	x.ID = id
+}
+
+func (x *FSetStat) GetID() uint32 {
+	return x.ID
+}
+
+func (ss *FSetStat) Write(w io.Writer) error {
 	if err := writeString(w, ss.Path); err != nil {
 		return err
 	}
@@ -750,12 +863,20 @@ func (ss *FSetStat) Read(r io.Reader) error {
 }
 
 type ReadLink struct {
-	Meta
+	ID uint32
 
 	Path string
 }
 
-func (s ReadLink) Write(w io.Writer) error {
+func (x *ReadLink) SetID(id uint32) {
+	x.ID = id
+}
+
+func (x *ReadLink) GetID() uint32 {
+	return x.ID
+}
+
+func (s *ReadLink) Write(w io.Writer) error {
 	return writeString(w, s.Path)
 }
 
@@ -764,13 +885,21 @@ func (s *ReadLink) Read(r io.Reader) error {
 }
 
 type Symlink struct {
-	Meta
+	ID uint32
 
 	LinkPath   string
 	TargetPath string
 }
 
-func (s Symlink) Write(w io.Writer) error {
+func (x *Symlink) SetID(id uint32) {
+	x.ID = id
+}
+
+func (x *Symlink) GetID() uint32 {
+	return x.ID
+}
+
+func (s *Symlink) Write(w io.Writer) error {
 	if err := writeString(w, s.LinkPath); err != nil {
 		return err
 	}
@@ -785,12 +914,20 @@ func (s *Symlink) Read(r io.Reader) error {
 }
 
 type RealPath struct {
-	Meta
+	ID uint32
 
 	Path string
 }
 
-func (s RealPath) Write(w io.Writer) error {
+func (x *RealPath) SetID(id uint32) {
+	x.ID = id
+}
+
+func (x *RealPath) GetID() uint32 {
+	return x.ID
+}
+
+func (s *RealPath) Write(w io.Writer) error {
 	return writeString(w, s.Path)
 }
 
@@ -815,14 +952,22 @@ const (
 )
 
 type Status struct {
-	Meta
+	ID uint32
 
 	Error    uint32
 	Message  string
 	Language string
 }
 
-func (s Status) Write(w io.Writer) error {
+func (x *Status) SetID(id uint32) {
+	x.ID = id
+}
+
+func (x *Status) GetID() uint32 {
+	return x.ID
+}
+
+func (s *Status) Write(w io.Writer) error {
 	if err := binary.Write(w, binary.BigEndian, s.Error); err != nil {
 		return err
 	}
@@ -847,12 +992,20 @@ func (s *Status) Read(r io.Reader) error {
 }
 
 type Handle struct {
-	Meta
+	ID uint32
 
 	Handle string
 }
 
-func (s Handle) Write(w io.Writer) error {
+func (x *Handle) SetID(id uint32) {
+	x.ID = id
+}
+
+func (x *Handle) GetID() uint32 {
+	return x.ID
+}
+
+func (s *Handle) Write(w io.Writer) error {
 	return writeString(w, s.Handle)
 }
 
@@ -861,12 +1014,20 @@ func (s *Handle) Read(r io.Reader) error {
 }
 
 type Data struct {
-	Meta
+	ID uint32
 
 	Data string
 }
 
-func (s Data) Write(w io.Writer) error {
+func (x *Data) SetID(id uint32) {
+	x.ID = id
+}
+
+func (x *Data) GetID() uint32 {
+	return x.ID
+}
+
+func (s *Data) Write(w io.Writer) error {
 	return writeString(w, s.Data)
 }
 
@@ -875,17 +1036,17 @@ func (s *Data) Read(r io.Reader) error {
 }
 
 type Name struct {
-	Meta
+	ID uint32
 
 	Count uint32
 	Names []struct {
 		Filename string
 		Longname string
-		Attr     Attr
+		Attr     []Attr
 	}
 }
 
-func (n Name) Write(w io.Writer) error {
+func (n *Name) Write(w io.Writer) error {
 	n.Count = uint32(len(n.Names))
 
 	if err := binary.Write(w, binary.BigEndian, n.Count); err != nil {
@@ -943,12 +1104,12 @@ func (n Name) Read(r io.Reader) error {
 }
 
 type Attrs struct {
-	Meta
+	ID uint32
 
 	Attr Attr
 }
 
-func (a Attrs) Write(w io.Writer) error {
+func (a *Attrs) Write(w io.Writer) error {
 	return a.Attr.Write(w)
 }
 
@@ -964,11 +1125,7 @@ type Version struct {
 	}
 }
 
-func (v Version) GetMeta() *Meta {
-	return nil
-}
-
-func (v Version) Write(w io.Writer) error {
+func (v *Version) Write(w io.Writer) error {
 	return binary.Write(w, binary.BigEndian, v.Version)
 	// TODO: write extensions
 }
@@ -982,11 +1139,13 @@ func (v *Version) Read(r io.Reader) error {
 //
 
 func readString(r io.Reader, v *string) error {
-	var length uint64
+	var length uint32
 
 	if err := binary.Read(r, binary.BigEndian, &length); err != nil {
 		return err
 	}
+
+	logrus.Infof("reading string with %d byte", length)
 
 	buf := make([]byte, length)
 	if err := binary.Read(r, binary.BigEndian, &buf); err != nil {
@@ -999,7 +1158,7 @@ func readString(r io.Reader, v *string) error {
 }
 
 func writeString(w io.Writer, s string) error {
-	if err := binary.Write(w, binary.BigEndian, uint64(len(s))); err != nil {
+	if err := binary.Write(w, binary.BigEndian, uint32(len(s))); err != nil {
 		return err
 	}
 

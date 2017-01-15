@@ -50,5 +50,7 @@ func main() {
 
 	logrus.Infof("OpenDir(/): %s", handle)
 
+	cli.ReadDir(handle)
+
 	cmd.Wait()
 }

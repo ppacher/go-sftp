@@ -46,15 +46,24 @@ func (r *Router) Get() (uint32, <-chan sshfxp.Message) {
 	return id, ch
 }
 
-func (r *Router) Resolve(x sshfxp.Message) error {
+func (r *Router) Resolve(payload interface{}) error {
 	r.m.Lock()
 	defer r.m.Unlock()
 
-	id := x.GetMeta().ID
+	var x sshfxp.Header
+	var ok bool
 
-	if res, ok := r.routes[id]; ok {
-		delete(r.routes, id)
-		res <- x
+	if x, ok = payload.(sshfxp.Header); !ok {
+		return errors.New("payload must be of type sshfxp.Header")
+	}
+
+	if _, ok := payload.(sshfxp.Message); !ok {
+		return errors.New("payload must be of type sshfxp.Message")
+	}
+
+	if res, ok := r.routes[x.GetID()]; ok {
+		delete(r.routes, x.GetID())
+		res <- payload.(sshfxp.Message)
 		return nil
 	}
 
