@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"reflect"
 )
 
 const (
@@ -101,7 +102,7 @@ type Packet struct {
 
 func (p *Packet) Read(r io.Reader) error {
 	read := func(x interface{}) error {
-		return binary.Read(r, binary.LittleEndian, x)
+		return binary.Read(r, binary.BigEndian, x)
 	}
 
 	if err := read(&p.Length); err != nil {
@@ -126,7 +127,7 @@ func (p *Packet) Bytes() ([]byte, error) {
 	buf.Grow(int(p.Length) + 4)
 
 	write := func(x interface{}) error {
-		return binary.Write(buf, binary.LittleEndian, x)
+		return binary.Write(buf, binary.BigEndian, x)
 	}
 
 	if err := write(p.Length); err != nil {
@@ -147,16 +148,14 @@ func (p *Packet) Bytes() ([]byte, error) {
 func (p *Packet) Encode(x interface{}) error {
 	buf := new(bytes.Buffer)
 
-	if meta, ok := x.(Message); !ok {
-		return fmt.Errorf("invalid parameter")
-	} else {
-		if err := meta.Meta().WriteMeta(buf); err != nil {
+	if meta, ok := x.(Message); ok && meta.GetMeta() != nil {
+		if err := meta.GetMeta().WriteMeta(buf); err != nil {
 			return err
 		}
 	}
 
 	if writer, ok := x.(Writer); !ok {
-		return fmt.Errorf("invalid parameter")
+		return fmt.Errorf("invalid parameter: %v does not implement sshfxp.Writer", x)
 	} else {
 		if err := writer.Write(buf); err != nil {
 			return err
@@ -245,15 +244,19 @@ func (p *Packet) Decode() (Message, error) {
 
 	buf := bytes.NewBuffer(p.Payload)
 
-	if err := o.(Message).Meta().ReadMeta(buf); err != nil {
-		return nil, err
+	if o.(Message).GetMeta() != nil {
+		if err := o.(Message).GetMeta().ReadMeta(buf); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := o.Read(buf); err != nil {
 		return nil, err
 	}
 
-	return o.(Message), nil
+	res := reflect.Indirect(reflect.ValueOf(o)).Interface()
+
+	return res.(Message), nil
 }
 
 //
@@ -273,13 +276,17 @@ type Init struct {
 	}
 }
 
+func (i Init) GetMeta() *Meta {
+	return nil
+}
+
 func (i Init) Write(w io.Writer) error {
-	return binary.Write(w, binary.LittleEndian, i.Version)
+	return binary.Write(w, binary.BigEndian, i.Version)
 	// TODO: write extensions
 }
 
 func (i *Init) Read(r io.Reader) error {
-	return binary.Read(r, binary.LittleEndian, &i.Version)
+	return binary.Read(r, binary.BigEndian, &i.Version)
 }
 
 const (
@@ -307,7 +314,7 @@ type Attr struct {
 
 func (a Attr) Write(w io.Writer) error {
 	write := func(x interface{}) error {
-		return binary.Write(w, binary.LittleEndian, x)
+		return binary.Write(w, binary.BigEndian, x)
 	}
 
 	if err := write(a.Flags); err != nil {
@@ -348,7 +355,7 @@ func (a Attr) Write(w io.Writer) error {
 
 func (a *Attr) Read(r io.Reader) error {
 	read := func(x interface{}) error {
-		return binary.Read(r, binary.LittleEndian, x)
+		return binary.Read(r, binary.BigEndian, x)
 	}
 
 	if err := read(&a.Flags); err != nil {
@@ -390,20 +397,20 @@ type Meta struct {
 	ID uint32
 }
 
-func (m *Meta) Meta() *Meta {
-	return m
+func (m Meta) GetMeta() *Meta {
+	return &m
 }
 
 type Message interface {
-	Meta() *Meta
+	GetMeta() *Meta
 }
 
 func (m Meta) WriteMeta(w io.Writer) error {
-	return binary.Write(w, binary.LittleEndian, m.ID)
+	return binary.Write(w, binary.BigEndian, m.ID)
 }
 
 func (m *Meta) ReadMeta(r io.Reader) error {
-	return binary.Read(r, binary.LittleEndian, &m.ID)
+	return binary.Read(r, binary.BigEndian, &m.ID)
 }
 
 const (
@@ -445,7 +452,7 @@ func (o Open) Write(w io.Writer) error {
 		return err
 	}
 
-	if err := binary.Write(w, binary.LittleEndian, o.PFlags); err != nil {
+	if err := binary.Write(w, binary.BigEndian, o.PFlags); err != nil {
 		return err
 	}
 
@@ -457,7 +464,7 @@ func (o *Open) Read(r io.Reader) error {
 		return err
 	}
 
-	if err := binary.Read(r, binary.LittleEndian, &o.PFlags); err != nil {
+	if err := binary.Read(r, binary.BigEndian, &o.PFlags); err != nil {
 		return err
 	}
 
@@ -466,6 +473,7 @@ func (o *Open) Read(r io.Reader) error {
 
 type Close struct {
 	Meta
+
 	Handle string
 }
 
@@ -489,11 +497,11 @@ func (_r Read) Write(w io.Writer) error {
 		return err
 	}
 
-	if err := binary.Write(w, binary.LittleEndian, _r.Offset); err != nil {
+	if err := binary.Write(w, binary.BigEndian, _r.Offset); err != nil {
 		return err
 	}
 
-	return binary.Write(w, binary.LittleEndian, _r.Length)
+	return binary.Write(w, binary.BigEndian, _r.Length)
 }
 
 func (_r *Read) Read(r io.Reader) error {
@@ -501,11 +509,11 @@ func (_r *Read) Read(r io.Reader) error {
 		return err
 	}
 
-	if err := binary.Read(r, binary.LittleEndian, &_r.Offset); err != nil {
+	if err := binary.Read(r, binary.BigEndian, &_r.Offset); err != nil {
 		return err
 	}
 
-	return binary.Read(r, binary.LittleEndian, &_r.Length)
+	return binary.Read(r, binary.BigEndian, &_r.Length)
 }
 
 type Write struct {
@@ -523,15 +531,15 @@ func (_w Write) Write(w io.Writer) error {
 		return err
 	}
 
-	if err := binary.Write(w, binary.LittleEndian, _w.Offset); err != nil {
+	if err := binary.Write(w, binary.BigEndian, _w.Offset); err != nil {
 		return err
 	}
 
-	if err := binary.Write(w, binary.LittleEndian, _w.Length); err != nil {
+	if err := binary.Write(w, binary.BigEndian, _w.Length); err != nil {
 		return err
 	}
 
-	return binary.Write(w, binary.LittleEndian, _w.Data)
+	return binary.Write(w, binary.BigEndian, _w.Data)
 }
 
 func (_w Write) Read(r io.Reader) error {
@@ -539,16 +547,16 @@ func (_w Write) Read(r io.Reader) error {
 		return err
 	}
 
-	if err := binary.Read(r, binary.LittleEndian, &_w.Offset); err != nil {
+	if err := binary.Read(r, binary.BigEndian, &_w.Offset); err != nil {
 		return nil
 	}
 
-	if err := binary.Read(r, binary.LittleEndian, &_w.Length); err != nil {
+	if err := binary.Read(r, binary.BigEndian, &_w.Length); err != nil {
 		return nil
 	}
 
 	_w.Data = make([]byte, _w.Length)
-	return binary.Read(r, binary.LittleEndian, &_w.Data)
+	return binary.Read(r, binary.BigEndian, &_w.Data)
 }
 
 type Remove struct {
@@ -815,7 +823,7 @@ type Status struct {
 }
 
 func (s Status) Write(w io.Writer) error {
-	if err := binary.Write(w, binary.LittleEndian, s.Error); err != nil {
+	if err := binary.Write(w, binary.BigEndian, s.Error); err != nil {
 		return err
 	}
 
@@ -827,7 +835,7 @@ func (s Status) Write(w io.Writer) error {
 }
 
 func (s *Status) Read(r io.Reader) error {
-	if err := binary.Read(r, binary.LittleEndian, &s.Error); err != nil {
+	if err := binary.Read(r, binary.BigEndian, &s.Error); err != nil {
 		return err
 	}
 
@@ -880,7 +888,7 @@ type Name struct {
 func (n Name) Write(w io.Writer) error {
 	n.Count = uint32(len(n.Names))
 
-	if err := binary.Write(w, binary.LittleEndian, n.Count); err != nil {
+	if err := binary.Write(w, binary.BigEndian, n.Count); err != nil {
 		return err
 	}
 
@@ -902,7 +910,7 @@ func (n Name) Write(w io.Writer) error {
 }
 
 func (n Name) Read(r io.Reader) error {
-	if err := binary.Read(r, binary.LittleEndian, &n.Count); err != nil {
+	if err := binary.Read(r, binary.BigEndian, &n.Count); err != nil {
 		return err
 	}
 
@@ -956,13 +964,17 @@ type Version struct {
 	}
 }
 
+func (v Version) GetMeta() *Meta {
+	return nil
+}
+
 func (v Version) Write(w io.Writer) error {
-	return binary.Write(w, binary.LittleEndian, v.Version)
+	return binary.Write(w, binary.BigEndian, v.Version)
 	// TODO: write extensions
 }
 
 func (v *Version) Read(r io.Reader) error {
-	return binary.Read(r, binary.LittleEndian, &v.Version)
+	return binary.Read(r, binary.BigEndian, &v.Version)
 }
 
 //
@@ -970,14 +982,14 @@ func (v *Version) Read(r io.Reader) error {
 //
 
 func readString(r io.Reader, v *string) error {
-	var length uint32
+	var length uint64
 
-	if err := binary.Read(r, binary.LittleEndian, &length); err != nil {
+	if err := binary.Read(r, binary.BigEndian, &length); err != nil {
 		return err
 	}
 
 	buf := make([]byte, length)
-	if err := binary.Read(r, binary.LittleEndian, &buf); err != nil {
+	if err := binary.Read(r, binary.BigEndian, &buf); err != nil {
 		return err
 	}
 
@@ -987,11 +999,11 @@ func readString(r io.Reader, v *string) error {
 }
 
 func writeString(w io.Writer, s string) error {
-	if err := binary.Write(w, binary.LittleEndian, uint32(len(s))); err != nil {
+	if err := binary.Write(w, binary.BigEndian, uint64(len(s))); err != nil {
 		return err
 	}
 
-	if n, err := w.Write([]byte(s)); n != len(s) && err != nil {
+	if err := binary.Write(w, binary.BigEndian, []byte(s)); err != nil {
 		return err
 	}
 

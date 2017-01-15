@@ -21,7 +21,7 @@ func NewRouter() *Router {
 	}
 }
 
-func (r *Router) Get(x sshfxp.Message) (uint32, <-chan sshfxp.Message) {
+func (r *Router) Get() (uint32, <-chan sshfxp.Message) {
 	r.m.Lock()
 	defer r.m.Unlock()
 
@@ -50,7 +50,7 @@ func (r *Router) Resolve(x sshfxp.Message) error {
 	r.m.Lock()
 	defer r.m.Unlock()
 
-	id := x.Meta().ID
+	id := x.GetMeta().ID
 
 	if res, ok := r.routes[id]; ok {
 		delete(r.routes, id)
