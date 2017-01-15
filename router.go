@@ -53,6 +53,7 @@ func (r *Router) Resolve(x sshfxp.Message) error {
 	id := x.Meta().ID
 
 	if res, ok := r.routes[id]; ok {
+		delete(r.routes, id)
 		res <- x
 		return nil
 	}
