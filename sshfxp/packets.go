@@ -37,6 +37,62 @@ const (
 	TypeExtendedReply = 201
 )
 
+func TypeID(x interface{}) byte {
+	switch x.(type) {
+	case Init:
+		return TypeInit
+	case Version:
+		return TypeVersion
+	case Open:
+		return TypeOpen
+	case Close:
+		return TypeClose
+	case Read:
+		return TypeRead
+	case Write:
+		return TypeWrite
+	case LStat:
+		return TypeLStat
+	case FStat:
+		return TypeFStat
+	case SetStat:
+		return TypeSetStat
+	case FSetStat:
+		return TypeFSetStat
+	case OpenDir:
+		return TypeOpenDir
+	case ReadDir:
+		return TypeReadDir
+	case Remove:
+		return TypeRemove
+	case MkDir:
+		return TypeMkDir
+	case RmDir:
+		return TypeRmDir
+	case RealPath:
+		return TypeRealPath
+	case Stat:
+		return TypeStat
+	case Rename:
+		return TypeRename
+	case ReadLink:
+		return TypeReadlink
+	case Symlink:
+		return TypeSymlink
+	case Status:
+		return TypeStatus
+	case Handle:
+		return TypeHandle
+	case Data:
+		return TypeData
+	case Name:
+		return TypeName
+	default:
+		panic(fmt.Sprintf("unknown type: %v", x))
+	}
+	return 0
+}
+
 type Packet struct {
 	Length  uint32
 	Type    byte
@@ -91,7 +147,7 @@ func (p *Packet) Bytes() ([]byte, error) {
 func (p *Packet) Encode(x interface{}) error {
 	buf := new(bytes.Buffer)
 
-	if meta, ok := x.(GetMeta); !ok {
+	if meta, ok := x.(Message); !ok {
 		return fmt.Errorf("invalid parameter")
 	} else {
 		if err := meta.Meta().WriteMeta(buf); err != nil {
@@ -110,6 +166,7 @@ func (p *Packet) Encode(x interface{}) error {
 	data := buf.Bytes()
 	p.Length = uint32(len(data) + 1)
 	p.Payload = data
+	p.Type = TypeID(x)
 
 	return nil
 }
@@ -122,7 +179,7 @@ type Reader interface {
 	Read(io.Reader) error
 }
 
-func (p *Packet) Decode() (interface{}, error) {
+func (p *Packet) Decode() (Message, error) {
 	var o Reader
 
 	switch p.Type {
@@ -188,7 +245,7 @@ func (p *Packet) Decode() (interface{}, error) {
 
 	buf := bytes.NewBuffer(p.Payload)
 
-	if err := o.(GetMeta).Meta().ReadMeta(buf); err != nil {
+	if err := o.(Message).Meta().ReadMeta(buf); err != nil {
 		return nil, err
 	}
 
@@ -196,7 +253,7 @@ func (p *Packet) Decode() (interface{}, error) {
 		return nil, err
 	}
 
-	return o, nil
+	return o.(Message), nil
 }
 
 //
@@ -337,7 +394,7 @@ func (m *Meta) Meta() *Meta {
 	return m
 }
 
-type GetMeta interface {
+type Message interface {
 	Meta() *Meta
 }
 
