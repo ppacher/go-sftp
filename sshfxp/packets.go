@@ -1042,7 +1042,7 @@ type Name struct {
 	Names []struct {
 		Filename string
 		Longname string
-		Attr     []Attr
+		Attr     Attr
 	}
 }
 

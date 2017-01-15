@@ -63,7 +63,9 @@ func (r *Router) Resolve(payload interface{}) error {
 
 	if res, ok := r.routes[x.GetID()]; ok {
 		delete(r.routes, x.GetID())
-		res <- payload.(sshfxp.Message)
+		go func() {
+			res <- payload.(sshfxp.Message)
+		}()
 		return nil
 	}
 
