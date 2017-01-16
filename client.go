@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/Sirupsen/logrus"
 	"github.com/nethack42/go-sftp/sshfxp"
@@ -106,41 +107,9 @@ func (cli *Client) Wait() {
 	cli.wg.Wait()
 }
 
-func (cli *Client) send(x sshfxp.Message) (<-chan sshfxp.Message, error) {
-	var pkt sshfxp.Packet
-	var res <-chan sshfxp.Message
-
-	if header, ok := (interface{}(x)).(sshfxp.Header); ok {
-		id, ch := cli.router.Get()
-
-		header.SetID(id)
-
-		res = ch
-	}
-
-	if err := pkt.Encode(x); err != nil {
-		return nil, err
-	}
-
-	cli.outgoing <- pkt
-
-	return res, nil
-}
-
-func (cli *Client) handleMessage(msg sshfxp.Packet) error {
-	logrus.Infof("Got message: Len=%d Type=%d: %#v", msg.Length, msg.Type, msg)
-	payload, err := msg.Decode()
-	if err != nil {
-		return fmt.Errorf("failed to decode message: %s", err)
-	}
-
-	if err := cli.router.Resolve(payload); err != nil {
-		return err
-	}
-
-	return nil
-}
-
+// DoHandshake establishes a new SFTP connection and performs the initial
+// handshake. The protocol version in use can afterwards be retrieved using the
+// Version method
 func (cli *Client) DoHandshake() error {
 	init := &sshfxp.Init{
 		Version: 3,
@@ -170,10 +139,13 @@ func (cli *Client) DoHandshake() error {
 	return nil
 }
 
+// Version returns the SFTP version used. The result is only valid after
+// DoHandshake as been called
 func (cli *Client) Version() uint32 {
 	return cli.version
 }
 
+// OpenDir opens a handle to the directory identified by path
 func (cli *Client) OpenDir(path string) (string, error) {
 	open := &sshfxp.OpenDir{
 		Path: path,
@@ -189,17 +161,21 @@ func (cli *Client) OpenDir(path string) (string, error) {
 	// wait for result
 	var res interface{} = <-res_chan
 
+	if err := sshfxp.IsError(err); err != nil {
+		return "", err
+	}
+
 	switch msg := res.(type) {
 	case *sshfxp.Handle:
 		return msg.Handle, nil
-	case *sshfxp.Status:
-		return "", fmt.Errorf("%d - %s", msg.Error, msg.Message)
 	}
 
 	return "", fmt.Errorf("unexpected response: %#v", res)
 }
 
-func (cli *Client) ReadDir(handle string) ([]*os.FileInfo, error) {
+// ReadDir reads directory contents for the given handle and returns a list
+// of os.FileInfo
+func (cli *Client) ReadDir(handle string) ([]os.FileInfo, error) {
 	read := &sshfxp.ReadDir{
 		Handle: handle,
 	}
@@ -211,6 +187,216 @@ func (cli *Client) ReadDir(handle string) ([]*os.FileInfo, error) {
 
 	res := <-resCh
 
-	logrus.Infof("Got: %#v", res)
-	return nil, nil
+	if err := sshfxp.IsError(res); err != nil {
+		return nil, err
+	}
+
+	switch msg := res.(type) {
+	case *sshfxp.Name:
+		var res []os.FileInfo
+		for _, name := range msg.Names {
+			res = append(res, FileInfo{
+				name:    name.Filename,
+				size:    int64(name.Attr.Size),
+				mode:    os.FileMode(name.Attr.Permissions),
+				modtime: time.Unix(int64(name.Attr.MTime), 0),
+				packet:  name,
+			})
+		}
+
+		return res, nil
+	}
+
+	return nil, errors.New("unexpected response")
+}
+
+// Close closes the given file or directory handle
+func (cli *Client) Close(handle string) error {
+	close := &sshfxp.Close{
+		Handle: handle,
+	}
+
+	resCh, err := cli.send(close)
+	if err != nil {
+		return err
+	}
+
+	if err := sshfxp.IsError(<-resCh); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// List returns a list of files and directories in a given path. List wraps
+// calles to OpenDir, ReadDir and Close
+func (cli *Client) List(path string) ([]os.FileInfo, error) {
+	handle, err := cli.OpenDir(path)
+	if err != nil {
+		return nil, err
+	}
+	defer cli.Close(handle)
+
+	return cli.ReadDir(handle)
+}
+
+// Open opens the file identifided by path using the access mode specified in
+// flags. If the file is going to be created, attr can hold additional file
+// attributes.
+//
+// BUG: flags and attr is currently not supported
+func (cli *Client) Open(path string, flags uint32, attr os.FileInfo) (string, error) {
+	open := &sshfxp.Open{
+		Filename:   path,
+		PFlags:     flags,
+		Attributes: sshfxp.Attr{}, // TODO: not yet supported
+	}
+
+	resCh, err := cli.send(open)
+	if err != nil {
+		return "", err
+	}
+
+	res := <-resCh
+	if err := sshfxp.IsError(res); err != nil {
+		return "", err
+	}
+
+	switch msg := res.(type) {
+	case *sshfxp.Handle:
+		return msg.Handle, nil
+	}
+
+	return "", errors.New("unexpected response")
+}
+
+// Read reads `length` bytes of data from the file identified by handle and
+// starting at offset. The file handle must have been acquired previously by
+// calling Open()
+func (cli *Client) Read(handle string, offset uint64, length uint32) ([]byte, error) {
+	read := &sshfxp.Read{
+		Handle: handle,
+		Offset: offset,
+		Length: length,
+	}
+
+	resCh, err := cli.send(read)
+	if err != nil {
+		return nil, err
+	}
+
+	res := <-resCh
+	if err := sshfxp.IsError(res); err != nil {
+		return nil, err
+	}
+
+	switch msg := res.(type) {
+	case *sshfxp.Data:
+		return []byte(msg.Data), nil
+	}
+
+	return nil, errors.New("unexpected response")
+}
+
+// Write writes the given slice of data to the file identified by handle starting
+// at offset. The file handle must have been acquired previously by calling
+// Open()
+func (cli *Client) Write(handle string, offset uint64, data []byte) error {
+	write := &sshfxp.Write{
+		Handle: handle,
+		Offset: offset,
+		Data:   string(data),
+	}
+
+	resCh, err := cli.send(write)
+	if err != nil {
+		return err
+	}
+
+	if err := sshfxp.IsError(<-resCh); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// Remove removes the file identified by path.
+func (cli *Client) Remove(path string) error {
+	if resCh, err := cli.send(&sshfxp.Remove{File: path}); err != nil {
+		return err
+	} else if err := sshfxp.IsError(<-resCh); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// Rename renames the file or directory identified by oldPath to newPath
+func (cli *Client) Rename(oldPath, newPath string) error {
+	if resCh, err := cli.send(&sshfxp.Rename{OldPath: oldPath, NewPath: newPath}); err != nil {
+		return err
+	} else if err := sshfxp.IsError(<-resCh); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (cli *Client) MkDir(path string, attr os.FileInfo) error {
+	mkdir := &sshfxp.MkDir{
+		Path: path,
+		Attr: sshfxp.Attr{},
+	}
+
+	if resCh, err := cli.send(mkdir); err != nil {
+		return err
+	} else if err := sshfxp.IsError(<-resCh); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (cli *Client) RmDir(path string) error {
+	if resCh, err := cli.send(&sshfxp.RmDir{Path: path}); err != nil {
+		return err
+	} else if err := sshfxp.IsError(<-resCh); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (cli *Client) send(x sshfxp.Message) (<-chan sshfxp.Message, error) {
+	var pkt sshfxp.Packet
+	var res <-chan sshfxp.Message
+
+	if header, ok := (interface{}(x)).(sshfxp.Header); ok {
+		id, ch := cli.router.Get()
+
+		header.SetID(id)
+
+		res = ch
+	}
+
+	if err := pkt.Encode(x); err != nil {
+		return nil, err
+	}
+
+	cli.outgoing <- pkt
+
+	return res, nil
+}
+
+func (cli *Client) handleMessage(msg sshfxp.Packet) error {
+	payload, err := msg.Decode()
+	if err != nil {
+		return fmt.Errorf("failed to decode message: %s", err)
+	}
+
+	if err := cli.router.Resolve(payload); err != nil {
+		return err
+	}
+
+	return nil
 }

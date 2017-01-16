@@ -1,10 +1,18 @@
 package sftp
 
 import (
+	"encoding/hex"
+	"fmt"
 	"io"
+	"os"
 
-	"github.com/Sirupsen/logrus"
+	"github.com/fatih/color"
 	"github.com/nethack42/go-sftp/sshfxp"
+)
+
+var (
+	dumpTxPackets = true
+	dumpRxPackets = true
 )
 
 func readConn(r io.Reader, ch chan<- sshfxp.Packet) error {
@@ -14,7 +22,15 @@ func readConn(r io.Reader, ch chan<- sshfxp.Packet) error {
 		if err := pkt.Read(r); err != nil {
 			return err
 		}
-		logrus.Infof("got: %v", pkt)
+
+		if dumpRxPackets {
+			blob, _ := pkt.Bytes()
+			hex := hex.Dump(blob)
+
+			print := color.New(color.FgYellow).SprintfFunc()
+
+			fmt.Fprintf(os.Stderr, print("<<<<<<<<<< receive (type=%d len=%d)\n%s<<<<<<<<<<\n", pkt.Type, pkt.Length, hex))
+		}
 
 		ch <- pkt
 	}
@@ -29,7 +45,13 @@ func writeConn(w io.Writer, ch <-chan sshfxp.Packet) error {
 			return err
 		}
 
-		logrus.Infof("sending: %v", blob)
+		if dumpTxPackets {
+			hex := hex.Dump(blob)
+			print := color.New(color.FgGreen).SprintfFunc()
+
+			fmt.Fprintln(os.Stderr, print(">>>>>>>>>> send (type=%d len=%d)\n%v>>>>>>>>>>\n", pkt.Type, pkt.Length, hex))
+		}
+
 		if _, err := w.Write(blob); err != nil {
 			return err
 		}

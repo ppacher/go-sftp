@@ -8,6 +8,7 @@ import (
 	"github.com/Sirupsen/logrus"
 	"github.com/alecthomas/kingpin"
 	"github.com/nethack42/go-sftp"
+	"github.com/nethack42/go-sftp/sshfxp"
 )
 
 var (
@@ -43,14 +44,18 @@ func main() {
 
 	cli := sftp.NewClient(out, in)
 
-	handle, err := cli.OpenDir("/home")
+	res, err := cli.List("/")
 	if err != nil {
-		logrus.Error(err)
+		logrus.Fatal(err)
 	}
 
-	logrus.Infof("OpenDir(/): %s", handle)
+	for _, file := range res {
+		internal := file.Sys()
 
-	cli.ReadDir(handle)
+		data := internal.(sshfxp.NameInfo)
+
+		logrus.Infof("%-10s %-10s %10d\t%s", file.Name(), file.ModTime(), file.Size(), data.Longname)
+	}
 
 	cmd.Wait()
 }

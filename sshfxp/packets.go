@@ -5,10 +5,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-
-	"github.com/Sirupsen/logrus"
 )
 
+// SSH_FXP defines the following packet types
 const (
 	TypeInit          = 1
 	TypeVersion       = 2
@@ -39,6 +38,17 @@ const (
 	TypeExtendedReply = 201
 )
 
+// Writer wraps sshfxp messages that can be encoded into a binary form
+type Writer interface {
+	Write(io.Writer) error
+}
+
+// Reader wraps sshfxp messags that can be populated from their binary form
+type Reader interface {
+	Read(io.Reader) error
+}
+
+// TypeID returns the packet type ID based on the given interface x
 func TypeID(x interface{}) byte {
 	switch x.(type) {
 	case *Init:
@@ -95,12 +105,19 @@ func TypeID(x interface{}) byte {
 	return 0
 }
 
+// Packet wraps SSH FXP packets as defined within the RFC for SFTP version 3
 type Packet struct {
-	Length  uint32
-	Type    byte
+	// Length holds the length of the packet in bytes
+	Length uint32
+
+	// Type holds the type identifier for the payload
+	Type byte
+
+	// Payload holds the packets payload and is exactly Length -1Byte large
 	Payload []byte
 }
 
+// Read reads packet contents from r
 func (p *Packet) Read(r io.Reader) error {
 	read := func(x interface{}) error {
 		return binary.Read(r, binary.BigEndian, x)
@@ -122,6 +139,7 @@ func (p *Packet) Read(r io.Reader) error {
 	return nil
 }
 
+// Bytes marshals the packet into its binary representation
 func (p *Packet) Bytes() ([]byte, error) {
 	buf := new(bytes.Buffer)
 
@@ -146,6 +164,8 @@ func (p *Packet) Bytes() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// Encode encodes the given payload into the packet. Length and Type members
+// will be populated automatically.
 func (p *Packet) Encode(x interface{}) error {
 	buf := new(bytes.Buffer)
 
@@ -171,14 +191,8 @@ func (p *Packet) Encode(x interface{}) error {
 	return nil
 }
 
-type Writer interface {
-	Write(io.Writer) error
-}
-
-type Reader interface {
-	Read(io.Reader) error
-}
-
+// Decode decodes the packets payload based on the Type member and returns
+// a decoded struct representation of the payload
 func (p *Packet) Decode() (Message, error) {
 	var o Message
 
@@ -269,6 +283,8 @@ func (p *Packet) Decode() (Message, error) {
 // Client sent requests
 //
 
+// Init represents the first packet sent by a client.
+//
 // When the file transfer protocol starts, it first sends a SSH_FXP_INIT
 // (including its version number) packet to the server.  The server
 // responds with a SSH_FXP_VERSION packet, supplying the lowest of its
@@ -282,21 +298,23 @@ type Init struct {
 	}
 }
 
+// Write implements Writer and marshals Init into its binary representation
 func (i *Init) Write(w io.Writer) error {
 	return binary.Write(w, binary.BigEndian, i.Version)
 	// TODO: write extensions
 }
 
+// Read implements Reader and unmarshals Init from its binary representation
 func (i *Init) Read(r io.Reader) error {
 	return binary.Read(r, binary.BigEndian, &i.Version)
 }
 
 const (
-	AttrSize        = 0x00000001
-	AttrUidGid      = 0x00000002
-	AttrPermissions = 0x00000004
-	AttrAcModTime   = 0x00000008
-	AttrExtended    = 0x80000000
+	FlagAttrSize        = 0x00000001
+	FlagAttrUidGid      = 0x00000002
+	FlagAttrPermissions = 0x00000004
+	FlagAttrAcModTime   = 0x00000008
+	FlagAttrExtended    = 0x80000000
 )
 
 type Attr struct {
@@ -323,34 +341,56 @@ func (a *Attr) Write(w io.Writer) error {
 		return err
 	}
 
-	if err := write(a.Size); err != nil {
-		return err
+	if a.Flags&FlagAttrSize > 0 {
+		if err := write(a.Size); err != nil {
+			return err
+		}
+
 	}
 
-	if err := write(a.UID); err != nil {
-		return err
+	if a.Flags&FlagAttrUidGid > 0 {
+		if err := write(a.UID); err != nil {
+			return err
+		}
+
+		if err := write(a.GID); err != nil {
+			return err
+		}
 	}
 
-	if err := write(a.GID); err != nil {
-		return err
+	if a.Flags&FlagAttrPermissions > 0 {
+		if err := write(a.Permissions); err != nil {
+			return err
+		}
+
 	}
 
-	if err := write(a.Permissions); err != nil {
-		return err
+	if a.Flags&FlagAttrAcModTime > 0 {
+
+		if err := write(a.ATime); err != nil {
+			return err
+		}
+
+		if err := write(a.MTime); err != nil {
+			return err
+		}
 	}
 
-	if err := write(a.ATime); err != nil {
-		return err
-	}
+	if a.Flags&FlagAttrExtended > 0 {
+		a.ExtendedCount = uint32(len(a.Extended))
+		if err := write(a.ExtendedCount); err != nil {
+			return err
+		}
 
-	if err := write(a.MTime); err != nil {
-		return err
-	}
+		for _, e := range a.Extended {
+			if err := write(e.Type); err != nil {
+				return err
+			}
 
-	// TODO: Extended is currently not supported
-	a.ExtendedCount = 0
-	if err := write(a.ExtendedCount); err != nil {
-		return err
+			if err := write(e.Data); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -360,38 +400,72 @@ func (a *Attr) Read(r io.Reader) error {
 		return binary.Read(r, binary.BigEndian, x)
 	}
 
+	// Flags must always be present and describes which data is available
+	// within the attributes
 	if err := read(&a.Flags); err != nil {
 		return err
 	}
 
-	if err := read(&a.Size); err != nil {
-		return err
+	if a.Flags&FlagAttrSize > 0 {
+		if err := read(&a.Size); err != nil {
+			return err
+		}
 	}
 
-	if err := read(&a.UID); err != nil {
-		return err
+	if a.Flags&FlagAttrUidGid > 0 {
+		if err := read(&a.UID); err != nil {
+			return err
+		}
+
+		if err := read(&a.GID); err != nil {
+			return err
+		}
 	}
 
-	if err := read(&a.GID); err != nil {
-		return err
+	if a.Flags&FlagAttrPermissions > 0 {
+
+		if err := read(&a.Permissions); err != nil {
+			return err
+		}
 	}
 
-	if err := read(&a.Permissions); err != nil {
-		return err
+	if a.Flags&FlagAttrAcModTime > 0 {
+
+		if err := read(&a.ATime); err != nil {
+			return err
+		}
+
+		if err := read(&a.MTime); err != nil {
+			return err
+		}
 	}
 
-	if err := read(&a.ATime); err != nil {
-		return err
-	}
+	if a.Flags&FlagAttrExtended > 0 {
 
-	if err := read(&a.MTime); err != nil {
-		return err
-	}
+		if err := read(&a.ExtendedCount); err != nil {
+			return err
+		}
 
-	if err := read(&a.ExtendedCount); err != nil {
-		return err
+		for i := 0; i < int(a.ExtendedCount); i++ {
+			var typeStr string
+			var dataStr string
+
+			if err := readString(r, &typeStr); err != nil {
+				return err
+			}
+
+			if err := readString(r, &dataStr); err != nil {
+				return err
+			}
+			a.Extended = append(a.Extended, struct {
+				Type string
+				Data string
+			}{
+				Type: typeStr,
+				Data: dataStr,
+			})
+		}
 	}
-	// TODO read extened
 	return nil
 }
 
@@ -538,9 +612,8 @@ type Write struct {
 
 	Handle string
 	Offset uint64
-	Length uint32
 
-	Data []byte
+	Data string
 }
 
 func (x *Write) SetID(id uint32) {
@@ -560,11 +633,7 @@ func (_w *Write) Write(w io.Writer) error {
 		return err
 	}
 
-	if err := binary.Write(w, binary.BigEndian, _w.Length); err != nil {
-		return err
-	}
-
-	return binary.Write(w, binary.BigEndian, _w.Data)
+	return writeString(w, _w.Data)
 }
 
 func (_w Write) Read(r io.Reader) error {
@@ -576,12 +645,7 @@ func (_w Write) Read(r io.Reader) error {
 		return nil
 	}
 
-	if err := binary.Read(r, binary.BigEndian, &_w.Length); err != nil {
-		return nil
-	}
-
-	_w.Data = make([]byte, _w.Length)
-	return binary.Read(r, binary.BigEndian, &_w.Data)
+	return readString(r, &_w.Data)
 }
 
 type Remove struct {
@@ -1035,15 +1099,25 @@ func (s *Data) Read(r io.Reader) error {
 	return readString(r, &s.Data)
 }
 
+type NameInfo struct {
+	Filename string
+	Longname string
+	Attr     Attr
+}
+
 type Name struct {
 	ID uint32
 
 	Count uint32
-	Names []struct {
-		Filename string
-		Longname string
-		Attr     Attr
-	}
+	Names []NameInfo
+}
+
+func (n *Name) SetID(id uint32) {
+	n.ID = id
+}
+
+func (n *Name) GetID() uint32 {
+	return n.ID
 }
 
 func (n *Name) Write(w io.Writer) error {
@@ -1070,7 +1144,7 @@ func (n *Name) Write(w io.Writer) error {
 	return fmt.Errorf("Not yet implemented")
 }
 
-func (n Name) Read(r io.Reader) error {
+func (n *Name) Read(r io.Reader) error {
 	if err := binary.Read(r, binary.BigEndian, &n.Count); err != nil {
 		return err
 	}
@@ -1092,15 +1166,10 @@ func (n Name) Read(r io.Reader) error {
 			return err
 		}
 
-		n.Names = append(n.Names, struct {
-			Filename string
-			Longname string
-			Attr     Attr
-		}{filename, longname, attr})
-
+		n.Names = append(n.Names, NameInfo{filename, longname, attr})
 	}
 
-	return fmt.Errorf("Not yet implemented")
+	return nil
 }
 
 type Attrs struct {
@@ -1144,8 +1213,6 @@ func readString(r io.Reader, v *string) error {
 	if err := binary.Read(r, binary.BigEndian, &length); err != nil {
 		return err
 	}
-
-	logrus.Infof("reading string with %d byte", length)
 
 	buf := make([]byte, length)
 	if err := binary.Read(r, binary.BigEndian, &buf); err != nil {
