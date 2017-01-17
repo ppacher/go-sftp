@@ -400,3 +400,7 @@ func (cli *Client) handleMessage(msg sshfxp.Packet) error {
 
 	return nil
 }
+
+func (cli *Client) FileReader(path string) (io.Reader, error) {
+	return NewFileReader(path, cli)
+}

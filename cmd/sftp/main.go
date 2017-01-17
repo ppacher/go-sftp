@@ -107,10 +107,14 @@ type Command func(*sftp.Client, []string) error
 var calls = map[string]Command{
 	"exit":   func(*sftp.Client, []string) error { return errors.New("exit") },
 	"ls":     listDirectory,
+	"dir":    listDirectory,
 	"mkdir":  mkDir,
 	"rmdir":  rmDir,
 	"rename": rename,
 	"mv":     rename,
+	"del":    remove,
+	"rm":     remove,
+	"cat":    cat,
 }
 
 func dispatchCall(cli *sftp.Client, line string) error {
@@ -197,6 +201,40 @@ func rename(cli *sftp.Client, params []string) error {
 	if err := cli.Rename(old, newP); err != nil {
 		logrus.Error(err)
 	}
+
+	return nil
+}
+
+func remove(cli *sftp.Client, params []string) error {
+	if len(params) < 1 {
+		log.Println("Missing parameter. Usage: remove [path]")
+		return nil
+	}
+
+	path := params[0]
+
+	if err := cli.Remove(path); err != nil {
+		logrus.Error(err)
+	}
+
+	return nil
+}
+
+func cat(cli *sftp.Client, params []string) error {
+	if len(params) < 1 {
+		log.Println("Missing parameter. Usage: cat [path]")
+		return nil
+	}
+
+	path := params[0]
+
+	reader, err := cli.FileReader(path)
+	if err != nil {
+		logrus.Error(err)
+		return nil
+	}
+
+	io.Copy(os.Stderr, reader)
 
 	return nil
 }
