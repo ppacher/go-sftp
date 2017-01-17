@@ -11,8 +11,8 @@ import (
 )
 
 var (
-	dumpTxPackets = true
-	dumpRxPackets = true
+	DumpTxPackets = false
+	DumpRxPackets = false
 )
 
 func readConn(r io.Reader, ch chan<- sshfxp.Packet) error {
@@ -23,7 +23,7 @@ func readConn(r io.Reader, ch chan<- sshfxp.Packet) error {
 			return err
 		}
 
-		if dumpRxPackets {
+		if DumpRxPackets {
 			blob, _ := pkt.Bytes()
 			hex := hex.Dump(blob)
 
@@ -45,7 +45,7 @@ func writeConn(w io.Writer, ch <-chan sshfxp.Packet) error {
 			return err
 		}
 
-		if dumpTxPackets {
+		if DumpTxPackets {
 			hex := hex.Dump(blob)
 			print := color.New(color.FgGreen).SprintfFunc()
 

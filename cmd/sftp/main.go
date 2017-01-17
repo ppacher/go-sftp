@@ -1,61 +1,152 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 
+	"golang.org/x/net/context"
+
 	"github.com/Sirupsen/logrus"
 	"github.com/alecthomas/kingpin"
+	"github.com/chzyer/readline"
+	"github.com/google/shlex"
 	"github.com/nethack42/go-sftp"
-	"github.com/nethack42/go-sftp/sshfxp"
 )
 
 var (
-	serverPath = kingpin.Flag("server", "Path to sftp server binary").Short('D').String()
+	debugServer = kingpin.Flag("server", "Path to SFTP server binary").Short('D').String()
+	debug       = kingpin.Flag("debug", "Enable debugging").Bool()
 )
 
-func main() {
-	kingpin.Parse()
+func startServer(ctx context.Context) *sftp.Client {
+	var args []string
 
-	cmd := exec.Command(*serverPath, "-l", "DEBUG", "-e")
+	if *debug {
+		args = []string{"-l", "debug", "-e"}
+	}
+	cmd := exec.CommandContext(ctx, *debugServer, args...)
 
-	out, err := cmd.StdoutPipe()
+	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		logrus.Fatal(err)
 	}
-	in, err := cmd.StdinPipe()
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		logrus.Fatal(err)
 	}
-
-	errpipe, err := cmd.StderrPipe()
+	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		logrus.Fatal(err)
 	}
 
 	go func() {
-		io.Copy(os.Stderr, errpipe)
+		io.Copy(os.Stderr, stderr)
 	}()
 
 	if err := cmd.Start(); err != nil {
 		logrus.Fatal(err)
 	}
 
-	cli := sftp.NewClient(out, in)
+	cli := sftp.NewClient(stdout, stdin)
+	if cli == nil {
+		logrus.Fatal(errors.New("NewClient returned nil"))
+	}
 
-	res, err := cli.List("/")
+	return cli
+}
+
+func main() {
+	kingpin.Parse()
+
+	//sftp.DumpTxPackets = true
+	//sftp.DumpRxPackets = true
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cli := startServer(ctx)
+	if cli == nil {
+		panic("cli is nil")
+	}
+
+	rl, err := readline.NewEx(&readline.Config{
+		Prompt:          "\033[32;1msftp)»\033[0m ",
+		InterruptPrompt: "^C",
+		EOFPrompt:       "exit",
+	})
+
 	if err != nil {
 		logrus.Fatal(err)
 	}
 
-	for _, file := range res {
-		internal := file.Sys()
+	for {
+		line, err := rl.Readline()
 
-		data := internal.(sshfxp.NameInfo)
+		if err == readline.ErrInterrupt {
+			if len(line) == 0 {
+				break
+			} else {
+				continue
+			}
+		} else if err == io.EOF {
+			break
+		}
 
-		logrus.Infof("%-10s %-10s %10d\t%s", file.Name(), file.ModTime(), file.Size(), data.Longname)
+		if err := dispatchCall(cli, line); err != nil {
+			break
+		}
+	}
+}
+
+type Command func(*sftp.Client, []string) error
+
+var calls = map[string]Command{
+	"exit": func(*sftp.Client, []string) error { return errors.New("exit") },
+	"ls":   listDirectory,
+}
+
+func dispatchCall(cli *sftp.Client, line string) error {
+	tokens, _ := shlex.Split(line)
+
+	if call, ok := calls[tokens[0]]; !ok {
+		log.Printf("Unknown command: %s", line)
+		return nil
+	} else {
+		return call(cli, tokens[1:])
+	}
+	return nil
+}
+
+func listDirectory(cli *sftp.Client, params []string) error {
+	if len(params) < 1 {
+		params = append(params, ".")
 	}
 
-	cmd.Wait()
+	path := params[0]
+
+	handle, err := cli.OpenDir(path)
+	if err != nil {
+		log.Printf("Error: %s", err)
+		return nil
+	}
+	defer cli.Close(handle)
+
+	ls, err := cli.ReadDir(handle)
+	if err != nil {
+		log.Printf("Error: %s", err)
+		return nil
+	}
+
+	for _, name := range ls {
+		if name.Name() == "." || name.Name() == ".." {
+			continue
+		}
+		fmt.Printf("\033[1m%s\033[0m\n", name.Name())
+	}
+
+	return nil
 }
