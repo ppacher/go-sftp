@@ -161,7 +161,7 @@ func (cli *Client) OpenDir(path string) (string, error) {
 	// wait for result
 	var res interface{} = <-res_chan
 
-	if err := sshfxp.IsError(err); err != nil {
+	if err := sshfxp.IsError(res); err != nil {
 		return "", err
 	}
 
@@ -170,7 +170,7 @@ func (cli *Client) OpenDir(path string) (string, error) {
 		return msg.Handle, nil
 	}
 
-	return "", fmt.Errorf("unexpected response: %#v", res)
+	return "", fmt.Errorf("open_dir: unexpected response: %#v", res)
 }
 
 // ReadDir reads directory contents for the given handle and returns a list

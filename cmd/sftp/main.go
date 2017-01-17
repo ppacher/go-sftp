@@ -105,8 +105,12 @@ func main() {
 type Command func(*sftp.Client, []string) error
 
 var calls = map[string]Command{
-	"exit": func(*sftp.Client, []string) error { return errors.New("exit") },
-	"ls":   listDirectory,
+	"exit":   func(*sftp.Client, []string) error { return errors.New("exit") },
+	"ls":     listDirectory,
+	"mkdir":  mkDir,
+	"rmdir":  rmDir,
+	"rename": rename,
+	"mv":     rename,
 }
 
 func dispatchCall(cli *sftp.Client, line string) error {
@@ -130,14 +134,14 @@ func listDirectory(cli *sftp.Client, params []string) error {
 
 	handle, err := cli.OpenDir(path)
 	if err != nil {
-		log.Printf("Error: %s", err)
+		logrus.Error(err)
 		return nil
 	}
 	defer cli.Close(handle)
 
 	ls, err := cli.ReadDir(handle)
 	if err != nil {
-		log.Printf("Error: %s", err)
+		logrus.Error(err)
 		return nil
 	}
 
@@ -146,6 +150,52 @@ func listDirectory(cli *sftp.Client, params []string) error {
 			continue
 		}
 		fmt.Printf("\033[1m%s\033[0m\n", name.Name())
+	}
+
+	return nil
+}
+
+func mkDir(cli *sftp.Client, params []string) error {
+	if len(params) < 1 {
+		log.Println("Missing parameter. Usage: mkdir [path]")
+		return nil
+	}
+
+	path := params[0]
+
+	if err := cli.MkDir(path, nil); err != nil {
+		logrus.Error(err)
+	}
+
+	return nil
+}
+
+func rmDir(cli *sftp.Client, params []string) error {
+	if len(params) < 1 {
+		log.Println("Missing parameter. Usage: rmdir [path]")
+		return nil
+	}
+
+	path := params[0]
+
+	if err := cli.RmDir(path); err != nil {
+		logrus.Error(err)
+	}
+
+	return nil
+}
+
+func rename(cli *sftp.Client, params []string) error {
+	if len(params) < 2 {
+		log.Println("Missing parameter. Usage: rename [old] [new]")
+		return nil
+	}
+
+	old := params[0]
+	newP := params[1]
+
+	if err := cli.Rename(old, newP); err != nil {
+		logrus.Error(err)
 	}
 
 	return nil
