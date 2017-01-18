@@ -404,3 +404,7 @@ func (cli *Client) handleMessage(msg sshfxp.Packet) error {
 func (cli *Client) FileReader(path string) (io.Reader, error) {
 	return NewFileReader(path, cli)
 }
+
+func (cli *Client) FileWriter(path string) (io.WriteCloser, error) {
+	return NewFileWriter(path, cli)
+}
