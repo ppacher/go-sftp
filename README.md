@@ -1,18 +1,40 @@
-# `go-sftp`
+# go-sftp
 
-An SFTP implementation for GoLang. 
+A pure SFTP protocol implementation for Go!
 
-Support for server and clients is planned, however, I'm still working on the
-client/protocol part. 
+This library provides an SFTP client and server (*not yet*) implementation and
+low-level packet definitions for SFTP version 3. The `cmd/sftp` package contains
+a SFTP commandline client with interactive shell and auto-completion. 
 
-To try `go-sftp` run the following command (you'll need OpenSSH installed):
+```go
+// Create a new sftp client. 
+cli, _ := sftp.NewClient(sshConn)
 
-```bash
-$ go run cmd/sftp/main.go --server /usr/lib/openssh/sftp-server
+// List contents of a directory
+list, _ := cli.List("/tmp")
+for _, fileInfo := range list {
+    fmt.Printf("%s    %dbytes\n", fileInfo.Name(), fileInfo.Size())
+}
+
+// Create an io.Reader for a given file and copy contents to stdout
+reader, _ := cli.FileReader("/etc/passwd")
+io.Copy(os.Stdout, reader)
+
+// Remove a file
+cli.Remove("/tmp/foobar")
+
+// Rename/Move a file or directory
+cli.Rename("/tmp/bar", "/tmp/foo")
+
+// Create a new directory
+cli.MkDir("/tmp/mydir")
+
+// Remove a directory
+cli.RmDir("/tmp/mydir")
 ```
 
-It will most likely fail some where ....
-
-
-Low-level packet definitions according to SFTP Version 3 are located within the
-`sshfxp` sub-package.
+`go-sftp` is not yet complete an some protocol features are still missing. In
+addition, the server implementation is postponed until the client is fully 
+functional is not yet complete an some protocol features are still missing. In
+addition, the server implementation is postponed until the client is fully 
+functional.

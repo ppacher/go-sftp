@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strings"
 
 	"golang.org/x/net/context"
 
@@ -18,8 +19,9 @@ import (
 )
 
 var (
-	debugServer = kingpin.Flag("server", "Path to SFTP server binary").Short('D').String()
-	debug       = kingpin.Flag("debug", "Enable debugging").Bool()
+	debugServer  = kingpin.Flag("server", "Path to SFTP server binary").Short('D').String()
+	debug        = kingpin.Flag("debug", "Enable debugging").Bool()
+	debugPackets = kingpin.Flag("dump-packets", "Dump packets sent between SFTP client and server").Bool()
 )
 
 func startServer(ctx context.Context) *sftp.Client {
@@ -62,8 +64,10 @@ func startServer(ctx context.Context) *sftp.Client {
 func main() {
 	kingpin.Parse()
 
-	//sftp.DumpTxPackets = true
-	//sftp.DumpRxPackets = true
+	if *debugPackets {
+		sftp.DumpTxPackets = true
+		sftp.DumpRxPackets = true
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -77,6 +81,7 @@ func main() {
 		Prompt:          "\033[32;1msftp)»\033[0m ",
 		InterruptPrompt: "^C",
 		EOFPrompt:       "exit",
+		AutoComplete:    buildCompleter(cli),
 	})
 
 	if err != nil {
@@ -102,30 +107,169 @@ func main() {
 	}
 }
 
-type Command func(*sftp.Client, []string) error
+type CommandFunc func(*sftp.Client, []string) error
+
+type Completer func(*sftp.Client) readline.DynamicCompleteFunc
+
+type Command struct {
+	Fn        CommandFunc
+	Completer Completer
+	Aliases   []string
+}
 
 var calls = map[string]Command{
-	"exit":   func(*sftp.Client, []string) error { return errors.New("exit") },
-	"ls":     listDirectory,
-	"dir":    listDirectory,
-	"mkdir":  mkDir,
-	"rmdir":  rmDir,
-	"rename": rename,
-	"mv":     rename,
-	"del":    remove,
-	"rm":     remove,
-	"cat":    cat,
+	"exit":  Command{func(*sftp.Client, []string) error { return errors.New("exit") }, nil, nil},
+	"ls":    Command{listDirectory, lsCompleter, []string{"dir"}},
+	"mkdir": Command{mkDir, nil, nil},
+	"rmdir": Command{rmDir, nil, nil},
+	"mv":    Command{rename, nil, []string{"rename"}},
+	"rm":    Command{remove, nil, []string{"del"}},
+	"cat":   Command{cat, lsCompleter, nil},
+}
+
+func buildCompleter(cli *sftp.Client) *readline.PrefixCompleter {
+	var items []readline.PrefixCompleterInterface
+
+	for key := range calls {
+		var comp readline.PrefixCompleterInterface
+
+		var names = []string{key}
+
+		names = append(names, calls[key].Aliases...)
+
+		for _, name := range names {
+			if calls[key].Completer != nil {
+				comp = readline.PcItem(name, readline.PcItemDynamic(calls[key].Completer(cli)))
+			} else {
+				comp = readline.PcItem(name)
+			}
+
+			items = append(items, comp)
+		}
+	}
+
+	var completer = readline.NewPrefixCompleter(items...)
+
+	return completer
+}
+
+func lsCompleter(cli *sftp.Client) readline.DynamicCompleteFunc {
+	return func(line string) []string {
+		tokens, _ := shlex.Split(line)
+		var dir = "."
+		if len(tokens) > 1 {
+			dir = tokens[1]
+		}
+
+		absolute := dir[0] == '/'
+
+		if dir[0] != '.' && dir[0] != '/' {
+			dir = "./" + dir
+		}
+
+		for {
+			log.Printf("listening %s\n", dir)
+			files, err := cli.List(dir)
+			if err != nil {
+				if len(dir) == 0 {
+					return nil
+				}
+				parts := strings.Split(dir, "/")
+				if len(parts) == 1 {
+					return nil
+				}
+
+				dir = strings.Join(parts[:len(parts)-1], "/")
+
+				if absolute {
+					dir = "/" + dir
+				}
+				continue
+			}
+
+			var res []string
+			for _, f := range files {
+				if f.Name() == "." || f.Name() == ".." {
+					continue
+				}
+				prefix := dir
+				if !strings.HasSuffix(prefix, "/") {
+					prefix = prefix + "/"
+				}
+				res = append(res, prefix+f.Name())
+			}
+
+			return res
+		}
+
+		return nil
+	}
+	/*
+		return func(line string) []string {
+			tokens, _ := shlex.Split(line)
+			var s string
+			var prefix string
+
+			if len(tokens) >= 2 {
+				if tokens[1] == "/" {
+					s = "/"
+				} else {
+					parts := strings.Split(tokens[1], "/")
+					if len(parts) > 1 {
+						i := len(parts) - 1
+						s = strings.Join(parts[:i], "/")
+						prefix = parts[i]
+					} else {
+						s = "."
+					}
+				}
+			} else {
+				s = "."
+			}
+
+			if res, err := cli.List(s); err != nil {
+				return nil
+			} else {
+				var names []string
+
+				if s == "/" {
+					s = ""
+				}
+
+				for _, v := range res {
+					if v.Name() == "." || v.Name() == ".." {
+						continue
+					}
+
+					if strings.HasPrefix(v.Name(), prefix) {
+						names = append(names, s+"/"+v.Name())
+					}
+				}
+
+				return names
+			}
+			return nil
+		}
+	*/
 }
 
 func dispatchCall(cli *sftp.Client, line string) error {
 	tokens, _ := shlex.Split(line)
 
-	if call, ok := calls[tokens[0]]; !ok {
-		log.Printf("Unknown command: %s", line)
-		return nil
-	} else {
-		return call(cli, tokens[1:])
+	for key, cmd := range calls {
+		if key == tokens[0] {
+			return cmd.Fn(cli, tokens[1:])
+		}
+
+		for _, alias := range cmd.Aliases {
+			if alias == tokens[0] {
+				return cmd.Fn(cli, tokens[1:])
+			}
+		}
 	}
+
+	log.Printf("Unknown command: %s", line)
+
 	return nil
 }
 
