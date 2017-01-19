@@ -20,6 +20,22 @@ for _, fileInfo := range list {
 reader, _ := cli.FileReader("/etc/passwd")
 io.Copy(os.Stdout, reader)
 
+// Create an io.WriteCloser for the given remote file and copy contents from 
+// a local file
+f, _ := os.Open("/tmp/foobar")
+writer, _ := cli.FileWriter("/tmp/barfoo")
+io.Copy(writer, f)
+
+// There is also Get() and Put() to upload/download files
+cli.Put("/tmp/local_file", "/tmp/remote_file")
+
+cli.Get("/tmp/remote_file", "/tmp/local_file")
+
+// Copy a remote file to a remote destination (client forwards data)
+reader, _ = cli.FileReader("/tmp/source")
+writer, _ = cli.FileWriter("/tmp/dest")
+io.Copy(writer, reader)
+
 // Remove a file
 cli.Remove("/tmp/foobar")
 
@@ -34,7 +50,5 @@ cli.RmDir("/tmp/mydir")
 ```
 
 `go-sftp` is not yet complete an some protocol features are still missing. In
-addition, the server implementation is postponed until the client is fully 
-functional is not yet complete an some protocol features are still missing. In
 addition, the server implementation is postponed until the client is fully 
 functional.

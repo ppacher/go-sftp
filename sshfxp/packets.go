@@ -9,29 +9,29 @@ import (
 
 // SSH_FXP defines the following packet types
 const (
-	TypeInit          = 1
-	TypeVersion       = 2
-	TypeOpen          = 3
-	TypeClose         = 4
-	TypeRead          = 5
-	TypeWrite         = 6
+	TypeInit          = 1 // [X]
+	TypeVersion       = 2 // [X]
+	TypeOpen          = 3 // [X]
+	TypeClose         = 4 // [X]
+	TypeRead          = 5 // [X]
+	TypeWrite         = 6 // [X]
 	TypeLStat         = 7
 	TypeFStat         = 8
 	TypeSetStat       = 9
 	TypeFSetStat      = 10
-	TypeOpenDir       = 11
-	TypeReadDir       = 12
-	TypeRemove        = 13
-	TypeMkDir         = 14
-	TypeRmDir         = 15
+	TypeOpenDir       = 11 // [X]
+	TypeReadDir       = 12 // [X]
+	TypeRemove        = 13 // [X]
+	TypeMkDir         = 14 // [X]
+	TypeRmDir         = 15 // [X]
 	TypeRealPath      = 16
 	TypeStat          = 17
-	TypeRename        = 18
+	TypeRename        = 18 // [X]
 	TypeReadlink      = 19
 	TypeSymlink       = 20
-	TypeStatus        = 101
-	TypeHandle        = 102
-	TypeData          = 103
+	TypeStatus        = 101 // [X]
+	TypeHandle        = 102 // [X]
+	TypeData          = 103 // [X]
 	TypeName          = 104
 	TypeAttr          = 105
 	TypeExtended      = 200

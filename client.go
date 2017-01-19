@@ -28,6 +28,40 @@ type Client struct {
 	wg sync.WaitGroup
 }
 
+type ClientConn interface {
+	OpenDir(string) (string, error)
+
+	Open(string, uint32, os.FileInfo) (string, error)
+
+	ReadDir(string) ([]os.FileInfo, error)
+
+	List(string) ([]os.FileInfo, error)
+
+	Close(string) error
+
+	Read(string, uint64, uint32) ([]byte, error)
+
+	Write(string, uint64, []byte) error
+
+	MkDir(string, os.FileInfo) error
+
+	RmDir(string) error
+
+	FileReader(string) (io.Reader, error)
+
+	FileWriter(string) (io.WriteCloser, error)
+
+	Put(string, string) error
+
+	Get(string, string) error
+
+	Rename(string, string) error
+
+	Remove(string) error
+}
+
+var _ ClientConn = &Client{}
+
 func NewClient(r io.ReadCloser, w io.WriteCloser) *Client {
 	cli := &Client{
 		reader:   r,
@@ -342,6 +376,7 @@ func (cli *Client) Rename(oldPath, newPath string) error {
 	return nil
 }
 
+// MkDir creates the directory path using os.FileInfo attributes
 func (cli *Client) MkDir(path string, attr os.FileInfo) error {
 	mkdir := &sshfxp.MkDir{
 		Path: path,
@@ -357,6 +392,7 @@ func (cli *Client) MkDir(path string, attr os.FileInfo) error {
 	return nil
 }
 
+// RmDir removes the directory path
 func (cli *Client) RmDir(path string) error {
 	if resCh, err := cli.send(&sshfxp.RmDir{Path: path}); err != nil {
 		return err
@@ -401,10 +437,49 @@ func (cli *Client) handleMessage(msg sshfxp.Packet) error {
 	return nil
 }
 
+// FileReader returns an io.Reader attached to the remote file identifed by
+// path
 func (cli *Client) FileReader(path string) (io.Reader, error) {
 	return NewFileReader(path, cli)
 }
 
+// FileWriter returns an io.WriteCloser attached to the remote file identified
+// by path
 func (cli *Client) FileWriter(path string) (io.WriteCloser, error) {
 	return NewFileWriter(path, cli)
+}
+
+// Put uploads a local file identified by local to remote
+func (cli *Client) Put(local, remote string) error {
+	rw, err := cli.FileWriter(remote)
+	if err != nil {
+		return err
+	}
+	defer rw.Close()
+
+	f, err := os.Open(local)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	_, err = io.Copy(rw, f)
+	return err
+}
+
+// Get downloads the remote file `remote` and stores it underl `local`
+func (cli *Client) Get(remote, local string) error {
+	r, err := cli.FileReader(remote)
+	if err != nil {
+		return err
+	}
+
+	f, err := os.Create(local)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	_, err = io.Copy(f, r)
+	return err
 }

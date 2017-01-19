@@ -5,10 +5,11 @@ import (
 	"sync"
 
 	"github.com/Sirupsen/logrus"
+	"github.com/nethack42/go-sftp/sshfxp"
 )
 
 type FileReader struct {
-	cli *Client
+	cli ClientConn
 
 	handle string
 
@@ -31,6 +32,9 @@ func (fr *FileReader) fetch() {
 	for {
 		buf, err := fr.cli.Read(fr.handle, length, 1024*1024)
 		if err != nil {
+			if e, ok := err.(*sshfxp.FxpStatusError); ok && e.Code == sshfxp.StatusEOF {
+				break
+			}
 			logrus.Errorf("file reader closed! %v", err)
 			break
 		}
@@ -42,12 +46,11 @@ func (fr *FileReader) fetch() {
 		}
 
 		length += uint64(n)
-		logrus.Infof("fetched data")
 	}
 }
 
-func NewFileReader(path string, cli *Client) (io.Reader, error) {
-	handle, err := cli.Open(path, 0, nil)
+func NewFileReader(path string, cli ClientConn) (io.Reader, error) {
+	handle, err := cli.Open(path, sshfxp.OpenRead, nil)
 	if err != nil {
 		return nil, err
 	}

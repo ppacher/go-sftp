@@ -3,12 +3,15 @@ package sftp
 import (
 	"io"
 	"sync"
+
+	"github.com/Sirupsen/logrus"
+	"github.com/nethack42/go-sftp/sshfxp"
 )
 
 type FileWriter struct {
 	io.WriteCloser
 
-	cli    *Client
+	cli    ClientConn
 	handle string
 
 	pipe_read io.ReadCloser
@@ -23,12 +26,16 @@ func (fw *FileWriter) write() {
 
 	offset := uint64(0)
 	for {
-		p := make([]byte, 1024*1024)
+		p := make([]byte, 1024)
 
 		n, err := fw.pipe_read.Read(p)
 
 		if n > 0 {
-			if err := fw.cli.Write(fw.handle, offset, p); err != nil {
+			if err := fw.cli.Write(fw.handle, offset, p[:n]); err != nil {
+				if e, ok := err.(*sshfxp.FxpStatusError); ok && e.Code == sshfxp.StatusEOF {
+					break
+				}
+				logrus.Errorf("failed to write: %s", err)
 				break
 			}
 			// write file
@@ -41,8 +48,8 @@ func (fw *FileWriter) write() {
 	}
 }
 
-func NewFileWriter(path string, cli *Client) (*FileWriter, error) {
-	handle, err := cli.Open(path, 0, nil)
+func NewFileWriter(path string, cli ClientConn) (*FileWriter, error) {
+	handle, err := cli.Open(path, sshfxp.OpenCreate|sshfxp.OpenWrite, nil)
 	if err != nil {
 		return nil, err
 	}

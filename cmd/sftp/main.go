@@ -125,6 +125,8 @@ var calls = map[string]Command{
 	"mv":    Command{rename, nil, []string{"rename"}},
 	"rm":    Command{remove, nil, []string{"del"}},
 	"cat":   Command{cat, lsCompleter, nil},
+	"get":   Command{get, nil, nil},
+	"put":   Command{put, nil, nil},
 }
 
 func buildCompleter(cli *sftp.Client) *readline.PrefixCompleter {
@@ -172,18 +174,21 @@ func lsCompleter(cli *sftp.Client) readline.DynamicCompleteFunc {
 			files, err := cli.List(dir)
 			if err != nil {
 				if len(dir) == 0 {
-					return nil
+					dir = "."
 				}
+
 				parts := strings.Split(dir, "/")
 				if len(parts) == 1 {
 					return nil
 				}
 
-				dir = strings.Join(parts[:len(parts)-1], "/")
+				ndir := strings.Join(parts[:len(parts)-1], "/")
 
 				if absolute {
-					dir = "/" + dir
+					ndir = "/" + ndir
 				}
+
+				dir = ndir
 				continue
 			}
 
@@ -255,6 +260,10 @@ func lsCompleter(cli *sftp.Client) readline.DynamicCompleteFunc {
 
 func dispatchCall(cli *sftp.Client, line string) error {
 	tokens, _ := shlex.Split(line)
+
+	if len(line) == 0 {
+		return nil
+	}
 
 	for key, cmd := range calls {
 		if key == tokens[0] {
@@ -381,4 +390,26 @@ func cat(cli *sftp.Client, params []string) error {
 	io.Copy(os.Stderr, reader)
 
 	return nil
+}
+
+func get(cli *sftp.Client, params []string) error {
+	if len(params) < 2 {
+		log.Println("Missing parameter. Usage: get [remote] [local]")
+		return nil
+	}
+
+	remote, local := params[0], params[1]
+
+	return cli.Get(remote, local)
+}
+
+func put(cli *sftp.Client, params []string) error {
+	if len(params) < 2 {
+		log.Println("Missing parameter. Usage: put [local] [remote]")
+		return nil
+	}
+
+	local, remote := params[0], params[1]
+
+	return cli.Put(local, remote)
 }
